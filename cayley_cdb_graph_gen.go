@@ -16,8 +16,12 @@ import (
 
 const insecureCdbPath = "postgresql://root@127.0.0.1:26257/"
 
-const runTime = 1*time.Second
-const batchSize = 15
+const (
+runTime = 1*time.Second
+reportEvery = 5*time.Second
+batchSize = 15
+NumRoutines = 4
+)
 
 type node struct {
 	parent string
@@ -28,7 +32,8 @@ type node struct {
 func generateAndSendAGraph(wg *sync.WaitGroup, sumChan chan uint64, quit chan struct{}) {
 	defer wg.Done()
 	var numProccessed uint64
-	if store, err := InitCayley(insecureCdbPath + "cayley?sslmode=disable"); err != nil {
+	lastReport := time.Now()
+	if store, err := InitCayley(insecureCdbPath + "cayley?sslmode=disable&binary_parameters"); err != nil {
 		fmt.Printf("Could not initialize cayley, %s\n", err.Error())
 		return
 	} else {
@@ -41,6 +46,11 @@ func generateAndSendAGraph(wg *sync.WaitGroup, sumChan chan uint64, quit chan st
 				sumChan <- numProccessed
 				return
 			default:
+				if time.Since(lastReport) > reportEvery {
+					sumChan <- numProccessed
+					numProccessed = 0
+					lastReport = time.Now()
+				}
 				nodes := generateGraph(store)
 				for _, n := range nodes {
 					n = n
@@ -90,8 +100,6 @@ func commitTx(store *cayley.Handle, tx *graph.Transaction, force bool) *graph.Tr
 	}
 }
 
-const NumRoutines = 4
-
 func main() {
 	rand.Seed(time.Now().UTC().UnixNano())
 	SetupCayleyInCdb()
@@ -106,10 +114,34 @@ func main() {
 	for i := 0; i < NumRoutines; i++ {
 		go generateAndSendAGraph(&termination, processedNodes, quit)
 	}
-	for time.Since(start) < runTime {
-		time.Sleep(time.Millisecond * 10)
+
+
+	var curSum uint64
+	var numSum int
+
+	lastUpdate := time.Now()
+	for {
+		select {
+		case <-time.After(time.Second):
+		case subSum := <-processedNodes:
+			curSum += subSum
+			fmt.Printf("node sum: %d\n", subSum)
+			numSum++
+			if numSum == NumRoutines {
+				fmt.Printf("\trunning sum: %d [%v/sec]\n", curSum, float64(curSum) / time.Since(lastUpdate).Seconds())
+				lastUpdate = time.Now()
+				totalSum += curSum
+				curSum = 0
+				numSum = 0
+			}
+		}
+		if time.Since(start) > runTime {
+			close(quit)
+			break
+		}
+
 	}
-	close(quit)
+
 	termination.Wait()
 	trueEnd = time.Since(start)
 
@@ -124,7 +156,7 @@ outerFor:
 	}
 
 	fmt.Printf("time elapsed: %v\n", trueEnd)
-	fmt.Printf("total processed: %v\n", totalSum)
+	fmt.Printf("total processed: %v\n", totalSum+curSum)
 	fmt.Printf("sets/second: %v\n", float64(totalSum) / trueEnd.Seconds())
 }
 
