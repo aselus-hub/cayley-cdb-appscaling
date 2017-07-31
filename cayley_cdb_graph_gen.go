@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"github.com/cayleygraph/cayley"
 	"github.com/cayleygraph/cayley/graph"
-	_ "github.com/cayleygraph/cayley/graph/sql"
+	_ "github.com/aselus-hub/cayley/graph/sql"
 	"github.com/cayleygraph/cayley/quad"
 	"github.com/satori/go.uuid"
 	"log"
@@ -16,7 +16,8 @@ import (
 
 const insecureCdbPath = "postgresql://root@127.0.0.1:26257/"
 
-const runTime = 10*time.Second
+const runTime = 60*time.Second
+const batchSize = 15
 
 type node struct {
 	parent string
@@ -32,16 +33,19 @@ func generateAndSendAGraph(wg *sync.WaitGroup, sumChan chan uint64, quit chan st
 		return
 	} else {
 		defer store.Close()
+		tx := cayley.NewTransaction()
 		for {
 			select {
 			case <-quit:
+				tx = commitTx(store, tx, true)
 				sumChan <- numProccessed
 				return
 			default:
 				nodes := generateGraph(store)
 				for _, n := range nodes {
 					n = n
-					addNquadsForNode(n, store)
+					addNquadsForNode(n, tx)
+					tx = commitTx(store, tx, false)
 					numProccessed++
 				}
 			}
@@ -64,8 +68,7 @@ func generateGraph(store *cayley.Handle) []node {
 	return nodes
 }
 
-func addNquadsForNode(n node, store *cayley.Handle) {
-	tx := cayley.NewTransaction()
+func addNquadsForNode(n node, tx *graph.Transaction)  {
 	if n.parent != "" {
 		tx.AddQuad(quad.Make(n.parent, "related_through", n.id, nil))
 	}
@@ -73,7 +76,18 @@ func addNquadsForNode(n node, store *cayley.Handle) {
 	if n.child != "" {
 		tx.AddQuad(quad.Make(n.id, "related_through", n.child, nil))
 	}
-	store.ApplyTransaction(tx)
+}
+
+func commitTx(store *cayley.Handle, tx *graph.Transaction, force bool) *graph.Transaction {
+	if len(tx.Deltas) > batchSize || force {
+		err := store.ApplyTransaction(tx)
+		if err != nil {
+			panic(err.Error())
+		}
+		return cayley.NewTransaction()
+	} else {
+		return tx
+	}
 }
 
 const NumRoutines = 8
