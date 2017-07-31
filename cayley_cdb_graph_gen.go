@@ -16,7 +16,7 @@ import (
 
 const insecureCdbPath = "postgresql://root@127.0.0.1:26257/"
 
-const runTime = 60*time.Second
+const runTime = 1*time.Second
 const batchSize = 15
 
 type node struct {
@@ -90,7 +90,7 @@ func commitTx(store *cayley.Handle, tx *graph.Transaction, force bool) *graph.Tr
 	}
 }
 
-const NumRoutines = 8
+const NumRoutines = 4
 
 func main() {
 	rand.Seed(time.Now().UTC().UnixNano())
